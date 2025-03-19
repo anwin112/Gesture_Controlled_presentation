@@ -1,5 +1,5 @@
 streamlit
-opencv-python-headless
+opencv-python-headless  # Headless version for cloud deployment
 mediapipe
 numpy
-
+pyautogui

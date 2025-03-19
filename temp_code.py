@@ -1,10 +1,10 @@
 import streamlit as st
 import cv2
 import mediapipe as mp
+import pyautogui
 import time
 import numpy as np
 import os
-import subprocess
 
 # Streamlit UI
 st.header("📽️ Presentation Assistant")
@@ -13,7 +13,7 @@ st.subheader("Deliver presentations with hand gestures.")
 # Upload PowerPoint File
 ppt = st.file_uploader("📂 Upload your PowerPoint file:", type=['pptx'])
 
-# Manage session state
+# Manage session state for controlling the gesture system
 if "running" not in st.session_state:
     st.session_state.running = False
 
@@ -27,7 +27,7 @@ if ppt:
             st.error("❌ Close the previous PowerPoint file before uploading a new one.")
             st.stop()
 
-    # Save the uploaded file
+    # Save the new uploaded file
     with open(save_path, "wb") as f:
         f.write(ppt.getbuffer())
 
@@ -35,11 +35,9 @@ if ppt:
 
     # Start PowerPoint slideshow
     if st.button("🚀 Start Presentation"):
-        # Open PowerPoint and start the slideshow
-        if os.name == "nt":  # Windows
-            subprocess.Popen(["start", "powerpnt", "/S", save_path], shell=True)
-        else:
-            st.warning("PowerPoint automation is not supported in this environment.")
+        os.startfile(save_path)
+        time.sleep(3)
+        pyautogui.press("f5")
         st.session_state.running = True  # Enable gesture control
         st.warning("🎤 Slideshow started! Use gestures to navigate.")
 
@@ -52,53 +50,69 @@ if st.session_state.running:
 # **Gesture Control Code**
 if st.session_state.running:
     mp_hands = mp.solutions.hands
-    hands = mp_hands.Hands(min_detection_confidence=0.7, min_tracking_confidence=0.7)
+    hands = mp_hands.Hands(min_detection_confidence=0.8, min_tracking_confidence=0.8)
     mp_draw = mp.solutions.drawing_utils
 
     cap = cv2.VideoCapture(0)
     screen_width = int(cap.get(3))
     screen_height = int(cap.get(4))
 
-    last_thumb_x = None  # Track previous thumb position for swipe detection
     swipe_cooldown = time.time()
+    pointer_active = False
+    pointer_start_time = None
+
+    def get_distance(p1, p2):
+        return np.linalg.norm(np.array(p1) - np.array(p2))
 
     while st.session_state.running:
         ret, frame = cap.read()
         if not ret:
             break
 
-        frame = cv2.flip(frame, 1)  # Mirror the image
+        frame = cv2.flip(frame, 1)
         img_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         results = hands.process(img_rgb)
 
         if results.multi_hand_landmarks:
             for hand_landmarks in results.multi_hand_landmarks:
                 thumb_tip = (int(hand_landmarks.landmark[4].x * screen_width), int(hand_landmarks.landmark[4].y * screen_height))
+                index_tip = (int(hand_landmarks.landmark[8].x * screen_width), int(hand_landmarks.landmark[8].y * screen_height))
+                pinky_tip = (int(hand_landmarks.landmark[20].x * screen_width), int(hand_landmarks.landmark[20].y * screen_height))
                 wrist = (int(hand_landmarks.landmark[0].x * screen_width), int(hand_landmarks.landmark[0].y * screen_height))
 
-                # Gesture: Thumbs Down to Exit
-                if thumb_tip[1] > wrist[1]:  # Thumb below wrist
+                dynamic_threshold = get_distance(wrist, index_tip) * 0.3
+
+                is_thumbs_down = thumb_tip[1] > wrist[1] and get_distance(thumb_tip, wrist) > dynamic_threshold * 1.5
+
+                if is_thumbs_down:
+                    pyautogui.press("esc")
                     st.session_state.running = False
-                    st.warning("❌ Presentation stopped by thumbs-down gesture.")
                     break
 
-                # Gesture: Swipe to Change Slides
-                if last_thumb_x is not None:
-                    movement = thumb_tip[0] - last_thumb_x  # Change in x-position
-                    swipe_threshold = screen_width * 0.2  # 20% of screen width for a valid swipe
+                if (time.time() - swipe_cooldown) > 1:
+                    if get_distance(thumb_tip, index_tip) < dynamic_threshold:
+                        pyautogui.press("right")
+                        swipe_cooldown = time.time()
 
-                    if (time.time() - swipe_cooldown) > 1:  # Cooldown to avoid multiple triggers
-                        if movement < -swipe_threshold:  # Left Swipe → Next Slide
-                            # Add a custom action for next slide
-                            swipe_cooldown = time.time()
+                    elif get_distance(thumb_tip, pinky_tip) < dynamic_threshold:
+                        pyautogui.press("left")
+                        swipe_cooldown = time.time()
 
-                        elif movement > swipe_threshold:  # Right Swipe → Previous Slide
-                            # Add a custom action for previous slide
-                            swipe_cooldown = time.time()
+                if pointer_active:
+                    screen_x = int(index_tip[0] * (1920 / screen_width))
+                    screen_y = int(index_tip[1] * (1080 / screen_height))
+                    pyautogui.moveTo(screen_x, screen_y)
+                    cv2.circle(frame, index_tip, 15, (0, 0, 255), 3)
 
-                last_thumb_x = thumb_tip[0]  # Store current thumb position for next frame
+                if index_tip[1] < wrist[1]:
+                    if pointer_start_time is None:
+                        pointer_start_time = time.time()
+                    elif time.time() - pointer_start_time > 2:
+                        pointer_active = True
+                else:
+                    pointer_start_time = None
+                    pointer_active = False
 
-                # Draw hand landmarks
                 mp_draw.draw_landmarks(frame, hand_landmarks, mp_hands.HAND_CONNECTIONS)
 
         cv2.imshow("Gesture-Controlled Slideshow", frame)
@@ -109,3 +123,4 @@ if st.session_state.running:
 
     cap.release()
     cv2.destroyAllWindows()
+
